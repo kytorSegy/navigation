@@ -12,8 +12,10 @@ services:
       - ADMIN_USERNAME=admin  # 后台用户名
       - ADMIN_PASSWORD=123456 # 后台密码
     volumes:
-      - ./database:/app/database  # 持久化数据库文件
+      - ./database:/app/database  # 这是原有的配置，用于持久化保存数据库文件，防止数据丢失
+      - ./uploads:/app/uploads    # 【新增的代码】持久化上传文件夹。
+                                  # 解释：冒号左边的 ./uploads 代表你服务器本地的文件夹；
+                                  # 冒号右边的 /app/uploads 代表 Docker 容器内部的文件夹。
+                                  # 添加这行后，程序自动下载的背景图（以及你以后上传的各种 Logo）
+                                  # 都会真实地保存在你服务器本地的 uploads 文件夹里。
     restart: unless-stopped
-
-
-
