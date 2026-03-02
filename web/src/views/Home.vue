@@ -110,8 +110,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
-// [修改点 2] 引入 getConfig
+// [修改点 1]：引入了 watch，用来实时监控搜索框里文字的变化
+import { ref, onMounted, computed, watch } from 'vue';
 import { getMenus, getCards, getAds, getFriends, getConfig } from '../api';
 import MenuBar from '../components/MenuBar.vue';
 import CardGrid from '../components/CardGrid.vue';
@@ -125,7 +125,6 @@ const leftAds = ref([]);
 const rightAds = ref([]);
 const showFriendLinks = ref(false);
 const friendLinks = ref([]);
-// [修改点 3] 定义自定义背景变量
 const customBackground = ref('');
 
 // 聚合搜索配置
@@ -167,20 +166,39 @@ function selectEngine(engine) {
   selectedEngine.value = engine;
 }
 
+// [修改点 2]：当你点击搜索框旁边的“X”按钮清空搜索时，执行这个函数
 function clearSearch() {
-  searchQuery.value = '';
+  searchQuery.value = ''; // 把搜索框清空
+  
+  // 恢复到正常的菜单状态：如果没有选中任何菜单，就默认选中第一个菜单并加载
+  if (!activeMenu.value && menus.value.length > 0) {
+    activeMenu.value = menus.value[0];
+  }
+  loadCards();
 }
 
+// [修改点 3]：提升搜索能力，现在连网站的介绍（desc）也能搜到了
 const filteredCards = computed(() => {
   if (!searchQuery.value) return cards.value;
   return cards.value.filter(card => 
     card.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-    card.url.toLowerCase().includes(searchQuery.value.toLowerCase())
+    card.url.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+    (card.desc && card.desc.toLowerCase().includes(searchQuery.value.toLowerCase())) // 新增：支持搜索描述
   );
 });
 
+// [新增点]：智能监听功能。如果你是用键盘的“退格键”把字删光的，也会自动回到正常的网页状态
+watch(searchQuery, (newVal) => {
+  // 当发现搜索框变成空的时候
+  if (newVal.trim() === '') {
+    if (!activeMenu.value && menus.value.length > 0) {
+      activeMenu.value = menus.value[0];
+    }
+    loadCards();
+  }
+});
+
 onMounted(async () => {
-  // [修改点 4] 获取系统配置（背景图等）
   try {
     const configRes = await getConfig();
     if (configRes.data.background) {
@@ -224,32 +242,49 @@ async function loadCards() {
   cards.value = res.data;
 }
 
+// [修改点 4：核心功能]：全新的全局搜索功能！
 async function handleSearch() {
   if (!searchQuery.value.trim()) return;
+
   if (selectedEngine.value.name === 'site') {
-    // 站内搜索：遍历所有菜单，查找所有卡片
-    let found = false;
+    // 站内搜索模式
+    let allMatchedCards = []; // 准备一个空篮子，用来装所有找到的网址
+
+    // 第一步：拿着手电筒，去每一个主菜单里面找
     for (const menu of menus.value) {
-      const res = await getCards(menu.id);
-      const match = res.data.find(card =>
-        card.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-        card.url.toLowerCase().includes(searchQuery.value.toLowerCase())
-      );
-      if (match) {
-        activeMenu.value = menu;
-        cards.value = res.data;
-        setTimeout(() => {
-          const el = document.querySelector(`[data-card-id='${match.id}']`);
-          if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});
-        }, 100);
-        found = true;
-        break;
+      try {
+        const res = await getCards(menu.id); // 找后台要这个菜单里的所有卡片
+        
+        // 筛选出符合搜索关键词的卡片
+        const matches = res.data.filter(card =>
+          card.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+          card.url.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+          (card.desc && card.desc.toLowerCase().includes(searchQuery.value.toLowerCase()))
+        );
+        
+        // 如果找到了，就把它们放进我们的篮子里
+        if (matches.length > 0) {
+          allMatchedCards = allMatchedCards.concat(matches);
+        }
+      } catch (err) {
+        console.error('搜索菜单卡片时出错:', err);
       }
     }
-    if (!found) {
-      alert('未找到相关内容');
+
+    // 第二步：所有菜单都找完啦，看看篮子里有没有东西
+    if (allMatchedCards.length > 0) {
+      cards.value = allMatchedCards; // 把找到的结果一口气全部显示在页面上
+      
+      // 关键操作：取消左边菜单的高亮，告诉用户现在是“全局搜索”页面
+      activeMenu.value = null;
+      activeSubMenu.value = null;
+    } else {
+      // 篮子是空的，说明全站都没有这个词
+      alert('未找到相关内容，请尝试换一个关键词');
     }
+
   } else {
+    // 如果选的是百度、谷歌这些站外引擎，直接跳过去搜索
     const url = selectedEngine.value.url(searchQuery.value);
     window.open(url, '_blank');
   }
