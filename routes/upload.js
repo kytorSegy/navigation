@@ -1,11 +1,17 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const router = express.Router();
+
+const persistentUploadDir = '/app/database/uploads';
+if (!fs.existsSync(persistentUploadDir)) {
+  fs.mkdirSync(persistentUploadDir, { recursive: true });
+}
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, path.join(__dirname, '../uploads'));
+    cb(null, persistentUploadDir);
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname);

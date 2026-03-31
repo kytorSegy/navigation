@@ -3,6 +3,17 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 
+function buildDisplayLogo(card) {
+  if (card.custom_logo_path) {
+    return '/uploads/' + card.custom_logo_path;
+  }
+  const remoteLogo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
+  if (/^https?:\/\//i.test(remoteLogo)) {
+    return `/api/icon?url=${encodeURIComponent(remoteLogo)}`;
+  }
+  return remoteLogo;
+}
+
 // ✅ [新增] 全站搜索接口 —— 必须放在 /:menuId 路由之前，否则 "search" 会被当成 menuId
 router.get('/search', (req, res) => {
   const { q } = req.query;
@@ -18,11 +29,7 @@ router.get('/search', (req, res) => {
   db.all(query, [keyword, keyword, keyword], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     rows.forEach(card => {
-      if (!card.custom_logo_path) {
-        card.display_logo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
-      } else {
-        card.display_logo = '/uploads/' + card.custom_logo_path;
-      }
+      card.display_logo = buildDisplayLogo(card);
     });
     res.json(rows);
   });
@@ -46,11 +53,7 @@ router.get('/:menuId', (req, res) => {
   db.all(query, params, (err, rows) => {
     if (err) return res.status(500).json({error: err.message});
     rows.forEach(card => {
-      if (!card.custom_logo_path) {
-        card.display_logo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
-      } else {
-        card.display_logo = '/uploads/' + card.custom_logo_path;
-      }
+      card.display_logo = buildDisplayLogo(card);
     });
     res.json(rows);
   });
