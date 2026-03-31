@@ -21,14 +21,13 @@ const compression = require('compression');
 const http = require('http');       // 用于处理 http:// 开头的链接
 const https = require('https');     // 用于处理 https:// 开头的链接
 const crypto = require('crypto');   // 用于生成一段加密的字符（MD5），用来做文件名
-const {
-  ICON_FETCH_FAILURE_COOLDOWN_MS,
-  REMOTE_FETCH_TIMEOUT_MS,
-  REMOTE_FETCH_MAX_RETRIES,
-  REMOTE_FETCH_MAX_REDIRECTS,
-  iconFetchFailureUntil,
-  iconFetchInProgress
-} = require('./utils/iconCacheState');
+
+const ICON_FETCH_FAILURE_COOLDOWN_MS = 30 * 60 * 1000;
+const REMOTE_FETCH_TIMEOUT_MS = 15000;
+const REMOTE_FETCH_MAX_RETRIES = 2;
+const REMOTE_FETCH_MAX_REDIRECTS = 3;
+const iconFetchFailureUntil = new Map();
+const iconFetchInProgress = new Set();
 	
 const app = express();
 const PERSISTENT_DATA_DIR = '/app/database';
