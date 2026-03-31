@@ -3,19 +3,28 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 
+// [新增工具函数] 用于把存进数据库的原始 url 包装成我们的代理请求格式
 function buildDisplayLogo(card) {
+  // 1. 如果用户自己在后台传了图标，直接返回本地路径
   if (card.custom_logo_path) {
     return '/uploads/' + card.custom_logo_path;
   }
+  
+  // 2. 如果没有自定义，就取用户填的 logo_url，如果也没填，就瞎猜一个该网址的 favicon.ico
   const remoteLogo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
+  
+  // 3. 只要是一个 http 链接，我们就把它丢给我们在 app.js 里写的 /api/icon 去处理缓存
   if (/^https?:\/\//i.test(remoteLogo)) {
     const fallbackSite = /^https?:\/\//i.test(card.url) ? card.url : '';
+    // 组装参数，比如把 url=xxx & site=xxx 拼装起来
     const query = new URLSearchParams({
       url: remoteLogo,
       ...(fallbackSite ? { site: fallbackSite } : {})
     });
     return `/api/icon?${query.toString()}`;
   }
+  
+  // 兜底：如果不是 http 链接，原样返回
   return remoteLogo;
 }
 
@@ -33,6 +42,7 @@ router.get('/search', (req, res) => {
 
   db.all(query, [keyword, keyword, keyword], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
+    // 循环给每一条搜索到的卡片附加上经过包装的显示图标
     rows.forEach(card => {
       card.display_logo = buildDisplayLogo(card);
     });
@@ -57,6 +67,7 @@ router.get('/:menuId', (req, res) => {
   
   db.all(query, params, (err, rows) => {
     if (err) return res.status(500).json({error: err.message});
+    // 循环给当前菜单下的卡片附加上经过包装的显示图标
     rows.forEach(card => {
       card.display_logo = buildDisplayLogo(card);
     });
@@ -64,7 +75,7 @@ router.get('/:menuId', (req, res) => {
   });
 });
 
-// 新增、修改、删除卡片需认证
+// 新增、修改、删除卡片需认证 (下面的逻辑保持不动)
 router.post('/', auth, (req, res) => {
   const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, order } = req.body;
   db.run('INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
