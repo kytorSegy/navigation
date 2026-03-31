@@ -1,7 +1,14 @@
 name: Build and Push Docker Image
+
+# ==========================================
+# 触发条件配置区
+# ==========================================
 on:
   push:
-    branches: [ main ]
+    # 【核心修改】使用 "**" 代表监听所有分支！
+    # 以后无论你新建什么分支，只要向里面推送代码，都会自动触发打包
+    branches: [ "**" ]
+    # 只有当下面这些核心文件或文件夹发生改动时，才会触发构建（节省服务器资源）
     paths:
       - 'Dockerfile'
       - 'app.js'
@@ -10,42 +17,61 @@ on:
       - 'web/**'
       - 'routes/**'
   pull_request:
-    branches: [ main ]
+    # 如果有人向任何分支发起合并请求，都会触发构建测试
+    branches: [ "**" ]
+  # 允许你在 GitHub 网页的 Actions 面板里手动点击按钮触发打包
   workflow_dispatch:
+
+# ==========================================
+# 任务执行区
+# ==========================================
 jobs:
   build:
+    # 指定运行这个脚本的服务器环境（使用最新版的 Ubuntu 系统）
     runs-on: ubuntu-latest
+    # 设置权限，允许脚本读取代码并向 GitHub 镜像仓库（ghcr.io）写入镜像
     permissions:
       contents: read
       packages: write
+      
     steps:
+      # 第1步：把当前分支的代码拉取到这台云端服务器上
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 第2步：登录到 GitHub 的容器镜像仓库
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}          # 自动获取你的 GitHub 用户名
+          password: ${{ secrets.GITHUB_TOKEN }}  # 自动获取临时的安全令牌，无需手动设置
 
+      # 第3步：安装并配置 Docker 构建工具
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ✅ 新增：将 repository 转为小写，避免大写用户名导致 tag 报错
+      # 第4步：将你的项目仓库名称转换为纯小写字母
+      # Docker 镜像名称强制要求小写，这一步是为了防止用户名中有大写字母导致报错
       - name: Set lowercase repository name
         run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
+      # 第5步：根据项目里的 Dockerfile 真正开始打包镜像，并推送到仓库
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          # 【魔法所在】${{ github.ref_name }} 会自动获取触发本次打包的分支名字。
+          # 如果你在 main 分支提交，它就打包出 :main 标签的镜像；
+          # 如果你在 search-version 分支提交，它就打包出 :search-version 标签的镜像。
           tags: |
-            ghcr.io/${{ env.REPO_LOWER }}:latest
+            ghcr.io/${{ env.REPO_LOWER }}:${{ github.ref_name }}
+          # 给镜像打上一些描述标签，方便在 GitHub 界面上查看归属
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=nav-item
             org.opencontainers.image.licenses=MIT
+          # 开启构建缓存，下一次打包时如果没有修改底层依赖，速度会大幅提升
           cache-from: type=gha
           cache-to: type=gha,mode=max
