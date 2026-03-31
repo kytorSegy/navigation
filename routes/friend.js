@@ -3,12 +3,23 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 
+function normalizeFriendLogo(logo) {
+  if (!logo) return logo;
+  if (/^https?:\/\//i.test(logo)) {
+    return `/api/icon?url=${encodeURIComponent(logo)}`;
+  }
+  return logo;
+}
+
 // 获取友链
 router.get('/', (req, res) => {
   const { page, pageSize } = req.query;
   if (!page && !pageSize) {
     db.all('SELECT * FROM friends', [], (err, rows) => {
       if (err) return res.status(500).json({error: err.message});
+      rows.forEach((row) => {
+        row.logo = normalizeFriendLogo(row.logo);
+      });
       res.json(rows);
     });
   } else {
@@ -19,6 +30,9 @@ router.get('/', (req, res) => {
       if (err) return res.status(500).json({error: err.message});
       db.all('SELECT * FROM friends LIMIT ? OFFSET ?', [size, offset], (err, rows) => {
         if (err) return res.status(500).json({error: err.message});
+        rows.forEach((row) => {
+          row.logo = normalizeFriendLogo(row.logo);
+        });
         res.json({
           total: countRow.total,
           page: pageNum,

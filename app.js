@@ -23,6 +23,14 @@ const https = require('https');     // 用于处理 https:// 开头的链接
 const crypto = require('crypto');   // 用于生成一段加密的字符（MD5），用来做文件名
 
 const app = express();
+const PERSISTENT_DATA_DIR = '/app/database';
+const PERSISTENT_UPLOAD_DIR = path.join(PERSISTENT_DATA_DIR, 'uploads');
+const ICON_FETCH_FAILURE_COOLDOWN_MS = 30 * 60 * 1000;
+const REMOTE_FETCH_TIMEOUT_MS = 15000;
+const REMOTE_FETCH_MAX_RETRIES = 2;
+const REMOTE_FETCH_MAX_REDIRECTS = 3;
+const iconFetchFailureUntil = new Map();
+const iconFetchInProgress = new Set();
 
 // 1. 获取端口：Zeabur 会自动注入 PORT 环境变量，如果没有则使用 3000
 const PORT = process.env.PORT || 3000;
@@ -32,7 +40,7 @@ app.use(express.json());
 app.use(compression());
 
 // 托管本地的上传文件夹
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(PERSISTENT_UPLOAD_DIR));
 
 // 静态资源托管
 // 关键点：添加 { index: false } 参数。
@@ -96,6 +104,161 @@ app.use('/api/ads', adRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/users', userRoutes);
 
+function ensureUploadDir() {
+  if (!fs.existsSync(PERSISTENT_UPLOAD_DIR)) {
+    fs.mkdirSync(PERSISTENT_UPLOAD_DIR, { recursive: true });
+  }
+  return PERSISTENT_UPLOAD_DIR;
+}
+
+function getCacheFilePath(url, prefix = 'asset', fallbackExt = '.bin') {
+  const uploadDir = ensureUploadDir();
+  const urlHash = crypto.createHash('md5').update(url).digest('hex');
+
+  let ext = fallbackExt;
+  try {
+    const parsedUrl = new URL(url);
+    const extname = path.extname(parsedUrl.pathname);
+    if (extname) {
+      ext = extname.toLowerCase();
+    }
+  } catch (e) {
+    // ignore parse error and keep fallback extension
+  }
+
+  const safeExt = ext.length > 8 ? fallbackExt : ext;
+  const fileName = `${prefix}_${urlHash}${safeExt}`;
+  return { fileName, cachePath: path.join(uploadDir, fileName) };
+}
+
+function cacheRemoteFile(url, cachePath, callback, attempt = 0, redirectCount = 0) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch (e) {
+    return callback(new Error('invalid url'));
+  }
+
+  const client = parsedUrl.protocol === 'https:' ? https : http;
+  const options = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; Nav-Item-IconFetcher/1.0)',
+      'Accept': 'image/*,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+    },
+    family: 4
+  };
+
+  const request = client.get(url, options, (response) => {
+    const statusCode = response.statusCode || 0;
+    const location = response.headers.location;
+    if ([301, 302, 303, 307, 308].includes(statusCode) && location && redirectCount < REMOTE_FETCH_MAX_REDIRECTS) {
+      response.resume();
+      const nextUrl = new URL(location, url).toString();
+      return cacheRemoteFile(nextUrl, cachePath, callback, attempt, redirectCount + 1);
+    }
+
+    if (statusCode !== 200) {
+      response.resume();
+      return callback(new Error(`upstream status ${statusCode}`), null, statusCode);
+    }
+
+    const file = fs.createWriteStream(cachePath);
+    response.pipe(file);
+
+    file.on('finish', () => {
+      file.close(() => callback(null, cachePath, 200));
+    });
+
+    file.on('error', (err) => {
+      fs.unlink(cachePath, () => callback(err));
+    });
+  });
+
+  request.setTimeout(REMOTE_FETCH_TIMEOUT_MS, () => {
+    request.destroy(new Error('request timeout'));
+  });
+
+  request.on('error', (err) => {
+    if (attempt < REMOTE_FETCH_MAX_RETRIES) {
+      const retryDelay = 300 * Math.pow(2, attempt);
+      return setTimeout(() => {
+        cacheRemoteFile(url, cachePath, callback, attempt + 1, redirectCount);
+      }, retryDelay);
+    }
+    callback(err);
+  });
+}
+
+// 通用图标代理与缓存：同一 URL 只下载一次，后续直接走本地 uploads
+app.get('/api/icon', (req, res) => {
+  const iconUrl = (req.query.url || '').trim();
+  if (!iconUrl || !/^https?:\/\//i.test(iconUrl)) {
+    return res.status(400).send('参数 url 必须是 http/https 链接');
+  }
+
+  const { fileName, cachePath } = getCacheFilePath(iconUrl, 'icon', '.ico');
+  if (fs.existsSync(cachePath)) {
+    return res.redirect(`/uploads/${fileName}`);
+  }
+
+  const now = Date.now();
+  const failUntil = iconFetchFailureUntil.get(iconUrl) || 0;
+  if (failUntil > now) {
+    return res.redirect(iconUrl);
+  }
+
+  // 不阻塞前端：先让浏览器直接加载远程图标，再在后台尝试缓存到持久卷
+  res.redirect(iconUrl);
+
+  if (iconFetchInProgress.has(iconUrl)) {
+    return;
+  }
+  iconFetchInProgress.add(iconUrl);
+
+  const fallbackCandidates = [iconUrl];
+  try {
+    const originFavicon = new URL('/favicon.ico', iconUrl).toString();
+    if (originFavicon !== iconUrl) {
+      fallbackCandidates.push(originFavicon);
+    }
+  } catch (e) {
+    // ignore invalid url for fallback generation
+  }
+
+  const tryFetchCandidate = (index) => {
+    const candidateUrl = fallbackCandidates[index];
+    if (!candidateUrl) {
+      iconFetchInProgress.delete(iconUrl);
+      iconFetchFailureUntil.set(iconUrl, Date.now() + ICON_FETCH_FAILURE_COOLDOWN_MS);
+      return;
+    }
+
+    cacheRemoteFile(candidateUrl, cachePath, (err) => {
+      if (!err) {
+        iconFetchInProgress.delete(iconUrl);
+        iconFetchFailureUntil.delete(iconUrl);
+        return;
+      }
+
+      if (fs.existsSync(cachePath)) {
+        fs.unlink(cachePath, () => {});
+      }
+
+      if (index + 1 < fallbackCandidates.length) {
+        return tryFetchCandidate(index + 1);
+      }
+
+      iconFetchInProgress.delete(iconUrl);
+      iconFetchFailureUntil.set(iconUrl, Date.now() + ICON_FETCH_FAILURE_COOLDOWN_MS);
+      const errCode = err && err.code ? err.code : 'UNKNOWN';
+      console.warn(`图标后台缓存失败，${ICON_FETCH_FAILURE_COOLDOWN_MS / 60000} 分钟后重试: ${errCode} ${iconUrl}`);
+    });
+  };
+
+  tryFetchCandidate(0);
+});
+
 
 // =================================================================
 // [新增部分]：代理下载和缓存背景图的专属接口
@@ -109,30 +272,7 @@ app.get('/api/background', (req, res) => {
     return res.status(404).send('未配置外部网络背景图');
   }
 
-  // 3. 找个地方存图片：确保项目里的 uploads 文件夹存在，没有的话就自动创建一个
-  const uploadDir = path.join(__dirname, 'uploads');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
-  }
-
-  // 4. 给图片起个名字：利用图片的网址生成一段独一无二的 MD5 字符
-  // 这样只要图片链接不换，名字就一直是一样的，方便我们判断是否下载过
-  const urlHash = crypto.createHash('md5').update(bgUrl).digest('hex');
-  
-  // 简单获取一下图片的格式（比如 .jpg 还是 .png），如果解析失败就默认当成 .jpg
-  let ext = '.jpg';
-  try {
-    const parsedUrl = new URL(bgUrl);
-    const extname = path.extname(parsedUrl.pathname);
-    if (extname) ext = extname;
-  } catch (e) {
-    // 解析网址出错时，保持默认的 .jpg
-  }
-  
-  // 最终保存在服务器里的文件名，类似于：bg_8a2b3c4d5e6f.jpg
-  const fileName = `bg_${urlHash}${ext}`;
-  // 最终保存在服务器里的完整绝对路径
-  const cachePath = path.join(uploadDir, fileName);
+  const { fileName, cachePath } = getCacheFilePath(bgUrl, 'bg', '.jpg');
 
   // 5. 核心逻辑：检查服务器本地硬盘里有没有这个文件？
   if (fs.existsSync(cachePath)) {
@@ -141,34 +281,18 @@ app.get('/api/background', (req, res) => {
     return res.redirect(`/uploads/${fileName}`);
   }
 
-  // 【情况 B：本地没找到，说明是第一次访问，需要去外网下载】
-  // 判断链接是 https 还是 http，选择对应的下载工具
-  const client = bgUrl.startsWith('https') ? https : http;
-
-  // 开始去外网请求这个图片
-  client.get(bgUrl, (response) => {
-    // 状态码 200 代表请求成功
-    if (response.statusCode === 200) {
-      // 准备好一个空文件，准备往里面写数据
-      const file = fs.createWriteStream(cachePath);
-      // 把网络上一点点流过来的数据，直接灌进本地文件里
-      response.pipe(file);
-
-      // 监听 "完成" 事件，当图片全部写进硬盘后执行：
-      file.on('finish', () => {
-        file.close(); // 关掉文件流，释放内存
-        // 下载完成后，赶紧告诉前端：去本地的 /uploads 文件夹拿图吧！
-        res.redirect(`/uploads/${fileName}`);
-      });
-    } else {
-      // 如果去外网没请求到图片（比如链接失效了）
-      res.status(response.statusCode).send('从网络下载背景图失败');
+  cacheRemoteFile(bgUrl, cachePath, (err, _savedPath, statusCode) => {
+    if (!err) {
+      return res.redirect(`/uploads/${fileName}`);
     }
-  }).on('error', (err) => {
+    if (fs.existsSync(cachePath)) {
+      fs.unlink(cachePath, () => {});
+    }
+    if (statusCode) {
+      return res.status(statusCode).send('从网络下载背景图失败');
+    }
     console.error('下载背景图时遇到网络错误:', err);
-    // 万一服务器由于某些原因下载不了，为了不让页面彻底变成白底，
-    // 我们做一个备选方案：直接把原本的网络链接丢给浏览器，让浏览器自己去尝试加载
-    res.redirect(bgUrl);
+    return res.redirect(bgUrl);
   });
 });
 

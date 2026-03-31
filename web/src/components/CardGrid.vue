@@ -120,7 +120,8 @@ function getCardStyle(index) {
 }
 
 function getLogo(card) {
-  if (card.custom_logo_path) return 'http://localhost:3000/uploads/' + card.custom_logo_path;
+  if (card.display_logo) return card.display_logo;
+  if (card.custom_logo_path) return '/uploads/' + card.custom_logo_path;
   if (card.logo_url) return card.logo_url;
   // 默认 favicon
   try {
