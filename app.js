@@ -21,6 +21,7 @@ const compression = require('compression');
 const http = require('http');       // 用于处理 http:// 开头的链接
 const https = require('https');     // 用于处理 https:// 开头的链接
 const crypto = require('crypto');   // 用于生成一段加密的字符（MD5），用来做文件名
+const { URL } = require('url');
 
 const app = express();
 const PERSISTENT_DATA_DIR = '/app/database';
@@ -172,30 +173,186 @@ function cacheRemoteFile(url, cachePath, callback, redirectCount = 0) {
   request.on('error', (err) => callback(err));
 }
 
-// 通用图标代理与缓存：同一 URL 只下载一次，后续直接走本地 uploads
-app.get('/api/icon', (req, res) => {
-  const iconUrl = (req.query.url || '').trim();
-  if (!iconUrl || !/^https?:\/\//i.test(iconUrl)) {
-    return res.status(400).send('参数 url 必须是 http/https 链接');
+function probeRemoteFile(url, callback, redirectCount = 0) {
+  const MAX_REDIRECTS = 5;
+  const client = url.startsWith('https') ? https : http;
+  const request = client.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; nav-item/1.0; +https://github.com/eooce/nav-item)',
+      'Accept': 'image/*,*/*;q=0.8'
+    }
+  }, (response) => {
+    const statusCode = response.statusCode || 0;
+    const location = response.headers.location;
+    const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+
+    if (isRedirect && location) {
+      if (redirectCount >= MAX_REDIRECTS) {
+        response.resume();
+        return callback(new Error('too many redirects'), null, 508);
+      }
+      const redirectedUrl = new URL(location, url).toString();
+      response.resume();
+      return probeRemoteFile(redirectedUrl, callback, redirectCount + 1);
+    }
+
+    response.resume();
+    if (statusCode === 200) {
+      return callback(null, url, 200);
+    }
+    return callback(new Error(`upstream status ${statusCode}`), null, statusCode);
+  });
+
+  request.setTimeout(10000, () => {
+    request.destroy(new Error('request timeout'));
+  });
+  request.on('error', (err) => callback(err));
+}
+
+function fetchHtml(url, callback, redirectCount = 0) {
+  const MAX_REDIRECTS = 5;
+  const client = url.startsWith('https') ? https : http;
+  const request = client.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; nav-item/1.0; +https://github.com/eooce/nav-item)',
+      'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8'
+    }
+  }, (response) => {
+    const statusCode = response.statusCode || 0;
+    const location = response.headers.location;
+    const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+
+    if (isRedirect && location) {
+      if (redirectCount >= MAX_REDIRECTS) {
+        response.resume();
+        return callback(new Error('too many redirects'), null);
+      }
+      const redirectedUrl = new URL(location, url).toString();
+      response.resume();
+      return fetchHtml(redirectedUrl, callback, redirectCount + 1);
+    }
+
+    if (statusCode !== 200) {
+      response.resume();
+      return callback(new Error(`upstream status ${statusCode}`), null);
+    }
+
+    let raw = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => {
+      raw += chunk;
+      if (raw.length > 512 * 1024) {
+        response.destroy();
+      }
+    });
+    response.on('end', () => callback(null, raw));
+    response.on('error', (err) => callback(err));
+  });
+
+  request.setTimeout(10000, () => {
+    request.destroy(new Error('request timeout'));
+  });
+  request.on('error', (err) => callback(err));
+}
+
+function extractIconLinksFromHtml(siteUrl, html) {
+  const links = [];
+  const reg = /<link\b[^>]*>/gi;
+  const hrefReg = /\bhref\s*=\s*["']([^"']+)["']/i;
+  const relReg = /\brel\s*=\s*["']([^"']+)["']/i;
+
+  const matches = html.match(reg) || [];
+  for (const tag of matches) {
+    const hrefMatch = tag.match(hrefReg);
+    if (!hrefMatch || !hrefMatch[1]) continue;
+    const relMatch = tag.match(relReg);
+    const rel = (relMatch && relMatch[1] ? relMatch[1].toLowerCase() : '');
+    if (!rel.includes('icon') && !rel.includes('shortcut')) continue;
+    try {
+      links.push(new URL(hrefMatch[1], siteUrl).toString());
+    } catch (e) {
+      // ignore invalid icon url
+    }
+  }
+  return Array.from(new Set(links));
+}
+
+function buildIconCandidates(iconUrl, siteUrl, callback) {
+  const candidates = [];
+  if (iconUrl && /^https?:\/\//i.test(iconUrl)) {
+    candidates.push(iconUrl);
   }
 
-  const { fileName, cachePath } = getCacheFilePath(iconUrl, 'icon', '.ico');
+  if (!siteUrl || !/^https?:\/\//i.test(siteUrl)) {
+    return callback(null, Array.from(new Set(candidates)));
+  }
+
+  let origin = '';
+  try {
+    origin = new URL(siteUrl).origin;
+  } catch (e) {
+    return callback(null, Array.from(new Set(candidates)));
+  }
+
+  // 优先尝试浏览器最常见的两个路径
+  candidates.push(`${origin}/favicon.ico`);
+  candidates.push(`${origin}/apple-touch-icon.png`);
+
+  fetchHtml(siteUrl, (err, html) => {
+    if (!err && html) {
+      const htmlIcons = extractIconLinksFromHtml(siteUrl, html);
+      candidates.unshift(...htmlIcons);
+    }
+    callback(null, Array.from(new Set(candidates)));
+  });
+}
+
+function tryCacheIconCandidates(iconCandidates, callback, index = 0) {
+  if (!iconCandidates || index >= iconCandidates.length) {
+    return callback(new Error('no available icon candidates'));
+  }
+  const current = iconCandidates[index];
+  const { fileName, cachePath } = getCacheFilePath(current, 'icon', '.ico');
+
   if (fs.existsSync(cachePath)) {
-    return res.redirect(`/uploads/${fileName}`);
+    return callback(null, fileName);
   }
 
-  cacheRemoteFile(iconUrl, cachePath, (err, _savedPath, statusCode) => {
+  cacheRemoteFile(current, cachePath, (err) => {
     if (!err) {
-      return res.redirect(`/uploads/${fileName}`);
+      return callback(null, fileName);
     }
     if (fs.existsSync(cachePath)) {
       fs.unlink(cachePath, () => {});
     }
-    if (statusCode) {
-      return res.status(statusCode).send('下载图标失败');
-    }
-    console.error('下载图标时遇到网络错误:', err);
-    return res.redirect(iconUrl);
+    return tryCacheIconCandidates(iconCandidates, callback, index + 1);
+  });
+}
+
+// 通用图标代理与缓存：同一 URL 只下载一次，后续直接走本地 uploads
+app.get('/api/icon', (req, res) => {
+  const iconUrl = (req.query.url || '').trim();
+  const siteUrl = (req.query.site || '').trim();
+  if ((!iconUrl || !/^https?:\/\//i.test(iconUrl)) && (!siteUrl || !/^https?:\/\//i.test(siteUrl))) {
+    return res.status(400).send('参数 url 或 site 至少一个为 http/https 链接');
+  }
+
+  buildIconCandidates(iconUrl, siteUrl, (_err, candidates) => {
+    tryCacheIconCandidates(candidates, (cacheErr, fileName) => {
+      if (!cacheErr && fileName) {
+        return res.redirect(`/uploads/${fileName}`);
+      }
+
+      // 最后兜底：给一个可访问检查，避免浏览器看到 500
+      const fallbackUrl = candidates && candidates.length > 0 ? candidates[0] : iconUrl;
+      if (fallbackUrl) {
+        return probeRemoteFile(fallbackUrl, (probeErr) => {
+          if (!probeErr) return res.redirect(fallbackUrl);
+          return res.redirect('/default-favicon.png');
+        });
+      }
+      return res.redirect('/default-favicon.png');
+    });
   });
 });
 

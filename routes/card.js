@@ -9,7 +9,12 @@ function buildDisplayLogo(card) {
   }
   const remoteLogo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
   if (/^https?:\/\//i.test(remoteLogo)) {
-    return `/api/icon?url=${encodeURIComponent(remoteLogo)}`;
+    const fallbackSite = /^https?:\/\//i.test(card.url) ? card.url : '';
+    const query = new URLSearchParams({
+      url: remoteLogo,
+      ...(fallbackSite ? { site: fallbackSite } : {})
+    });
+    return `/api/icon?${query.toString()}`;
   }
   return remoteLogo;
 }
