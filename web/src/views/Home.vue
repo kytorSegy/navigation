@@ -185,13 +185,35 @@ const filteredCards = computed(() => {
   );
 });
 
-// 监听搜索框，退格删光时自动恢复菜单
+// 监听搜索框，实时响应输入
+let searchTimer = null;
 watch(searchQuery, (newVal) => {
   if (newVal.trim() === '') {
+    // 清空时恢复菜单
     if (!activeMenu.value && menus.value.length > 0) {
       activeMenu.value = menus.value[0];
     }
     loadCards();
+    return;
+  }
+
+  // ✅ 站内模式下，输入时自动全站搜索（加 300ms 防抖，避免每个字都请求）
+  if (selectedEngine.value.name === 'site') {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      try {
+        const res = await searchCards(newVal.trim());
+        if (res.data.length > 0) {
+          cards.value = res.data;
+          activeMenu.value = null;
+          activeSubMenu.value = null;
+        } else {
+          cards.value = [];
+        }
+      } catch (err) {
+        console.error('站内搜索出错:', err);
+      }
+    }, 300);
   }
 });
 
