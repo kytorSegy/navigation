@@ -3,10 +3,14 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 
-function normalizeFriendLogo(logo) {
+function normalizeFriendLogo(logo, siteUrl = '') {
   if (!logo) return logo;
   if (/^https?:\/\//i.test(logo)) {
-    return `/api/icon?url=${encodeURIComponent(logo)}`;
+    const query = new URLSearchParams({
+      url: logo,
+      ...(siteUrl && /^https?:\/\//i.test(siteUrl) ? { site: siteUrl } : {})
+    });
+    return `/api/icon?${query.toString()}`;
   }
   return logo;
 }
@@ -18,7 +22,7 @@ router.get('/', (req, res) => {
     db.all('SELECT * FROM friends', [], (err, rows) => {
       if (err) return res.status(500).json({error: err.message});
       rows.forEach((row) => {
-        row.logo = normalizeFriendLogo(row.logo);
+        row.logo = normalizeFriendLogo(row.logo, row.url);
       });
       res.json(rows);
     });
@@ -31,7 +35,7 @@ router.get('/', (req, res) => {
       db.all('SELECT * FROM friends LIMIT ? OFFSET ?', [size, offset], (err, rows) => {
         if (err) return res.status(500).json({error: err.message});
         rows.forEach((row) => {
-          row.logo = normalizeFriendLogo(row.logo);
+          row.logo = normalizeFriendLogo(row.logo, row.url);
         });
         res.json({
           total: countRow.total,
