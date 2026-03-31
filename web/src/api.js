@@ -29,6 +29,9 @@ export const addCard = (data) => axios.post(`${BASE}/cards`, data, { headers: au
 export const updateCard = (id, data) => axios.put(`${BASE}/cards/${id}`, data, { headers: authHeaders() });
 export const deleteCard = (id) => axios.delete(`${BASE}/cards/${id}`, { headers: authHeaders() });
 
+// ✅ [新增] 全站搜索API —— 一次请求搜遍所有菜单和子菜单
+export const searchCards = (q) => axios.get(`${BASE}/cards/search`, { params: { q } });
+
 export const uploadLogo = (file) => {
   const formData = new FormData();
   formData.append('logo', file);
