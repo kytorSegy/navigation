@@ -125,12 +125,32 @@ function getCacheFilePath(url, prefix = 'asset', fallbackExt = '.bin') {
   return { fileName, cachePath: path.join(uploadDir, fileName) };
 }
 
-function cacheRemoteFile(url, cachePath, callback) {
+function cacheRemoteFile(url, cachePath, callback, redirectCount = 0) {
+  const MAX_REDIRECTS = 5;
   const client = url.startsWith('https') ? https : http;
-  const request = client.get(url, (response) => {
-    if (response.statusCode !== 200) {
+  const request = client.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; nav-item/1.0; +https://github.com/eooce/nav-item)',
+      'Accept': 'image/*,*/*;q=0.8'
+    }
+  }, (response) => {
+    const statusCode = response.statusCode || 0;
+    const location = response.headers.location;
+    const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+
+    if (isRedirect && location) {
+      if (redirectCount >= MAX_REDIRECTS) {
+        response.resume();
+        return callback(new Error('too many redirects'), null, 508);
+      }
+      const redirectedUrl = new URL(location, url).toString();
       response.resume();
-      return callback(new Error(`upstream status ${response.statusCode}`), null, response.statusCode);
+      return cacheRemoteFile(redirectedUrl, cachePath, callback, redirectCount + 1);
+    }
+
+    if (statusCode !== 200) {
+      response.resume();
+      return callback(new Error(`upstream status ${statusCode}`), null, statusCode);
     }
 
     const file = fs.createWriteStream(cachePath);
