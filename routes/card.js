@@ -3,6 +3,31 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 
+// ✅ [新增] 全站搜索接口 —— 必须放在 /:menuId 路由之前，否则 "search" 会被当成 menuId
+router.get('/search', (req, res) => {
+  const { q } = req.query;
+  if (!q || !q.trim()) return res.json([]);
+
+  const keyword = `%${q.trim()}%`;
+  const query = `
+    SELECT * FROM cards 
+    WHERE title LIKE ? OR url LIKE ? OR desc LIKE ? 
+    ORDER BY "order"
+  `;
+
+  db.all(query, [keyword, keyword, keyword], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    rows.forEach(card => {
+      if (!card.custom_logo_path) {
+        card.display_logo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
+      } else {
+        card.display_logo = '/uploads/' + card.custom_logo_path;
+      }
+    });
+    res.json(rows);
+  });
+});
+
 // 获取指定菜单的卡片
 router.get('/:menuId', (req, res) => {
   const { subMenuId } = req.query;
@@ -57,4 +82,4 @@ router.delete('/:id', auth, (req, res) => {
   });
 });
 
-module.exports = router; 
+module.exports = router;
