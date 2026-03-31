@@ -110,9 +110,9 @@
 </template>
 
 <script setup>
-// [修改点 1]：引入了 watch，用来实时监控搜索框里文字的变化
 import { ref, onMounted, computed, watch } from 'vue';
-import { getMenus, getCards, getAds, getFriends, getConfig } from '../api';
+// ✅ [修改] 引入新增的 searchCards 全站搜索接口
+import { getMenus, getCards, getAds, getFriends, getConfig, searchCards } from '../api';
 import MenuBar from '../components/MenuBar.vue';
 import CardGrid from '../components/CardGrid.vue';
 
@@ -166,30 +166,27 @@ function selectEngine(engine) {
   selectedEngine.value = engine;
 }
 
-// [修改点 2]：当你点击搜索框旁边的“X”按钮清空搜索时，执行这个函数
+// 点击"X"清空搜索，恢复到正常菜单状态
 function clearSearch() {
-  searchQuery.value = ''; // 把搜索框清空
-  
-  // 恢复到正常的菜单状态：如果没有选中任何菜单，就默认选中第一个菜单并加载
+  searchQuery.value = '';
   if (!activeMenu.value && menus.value.length > 0) {
     activeMenu.value = menus.value[0];
   }
   loadCards();
 }
 
-// [修改点 3]：提升搜索能力，现在连网站的介绍（desc）也能搜到了
+// 搜索结果过滤（用于站内搜索实时展示）
 const filteredCards = computed(() => {
   if (!searchQuery.value) return cards.value;
   return cards.value.filter(card => 
     card.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
     card.url.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-    (card.desc && card.desc.toLowerCase().includes(searchQuery.value.toLowerCase())) // 新增：支持搜索描述
+    (card.desc && card.desc.toLowerCase().includes(searchQuery.value.toLowerCase()))
   );
 });
 
-// [新增点]：智能监听功能。如果你是用键盘的“退格键”把字删光的，也会自动回到正常的网页状态
+// 监听搜索框，退格删光时自动恢复菜单
 watch(searchQuery, (newVal) => {
-  // 当发现搜索框变成空的时候
   if (newVal.trim() === '') {
     if (!activeMenu.value && menus.value.length > 0) {
       activeMenu.value = menus.value[0];
@@ -242,49 +239,31 @@ async function loadCards() {
   cards.value = res.data;
 }
 
-// [修改点 4：核心功能]：全新的全局搜索功能！
+// ✅ [核心修改] 站内搜索改为调用后端全站搜索接口
+// 原来：前端逐个请求每个主菜单，子菜单完全未覆盖
+// 现在：一次请求搜遍数据库中全部菜单 + 子菜单的所有卡片
 async function handleSearch() {
   if (!searchQuery.value.trim()) return;
 
   if (selectedEngine.value.name === 'site') {
-    // 站内搜索模式
-    let allMatchedCards = []; // 准备一个空篮子，用来装所有找到的网址
+    try {
+      const res = await searchCards(searchQuery.value.trim());
+      const matched = res.data;
 
-    // 第一步：拿着手电筒，去每一个主菜单里面找
-    for (const menu of menus.value) {
-      try {
-        const res = await getCards(menu.id); // 找后台要这个菜单里的所有卡片
-        
-        // 筛选出符合搜索关键词的卡片
-        const matches = res.data.filter(card =>
-          card.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-          card.url.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-          (card.desc && card.desc.toLowerCase().includes(searchQuery.value.toLowerCase()))
-        );
-        
-        // 如果找到了，就把它们放进我们的篮子里
-        if (matches.length > 0) {
-          allMatchedCards = allMatchedCards.concat(matches);
-        }
-      } catch (err) {
-        console.error('搜索菜单卡片时出错:', err);
+      if (matched.length > 0) {
+        cards.value = matched;
+        // 取消菜单高亮，表示当前是"全局搜索"视图
+        activeMenu.value = null;
+        activeSubMenu.value = null;
+      } else {
+        alert('未找到相关内容，请尝试换一个关键词');
       }
+    } catch (err) {
+      console.error('站内搜索出错:', err);
+      alert('搜索时发生错误，请稍后再试');
     }
-
-    // 第二步：所有菜单都找完啦，看看篮子里有没有东西
-    if (allMatchedCards.length > 0) {
-      cards.value = allMatchedCards; // 把找到的结果一口气全部显示在页面上
-      
-      // 关键操作：取消左边菜单的高亮，告诉用户现在是“全局搜索”页面
-      activeMenu.value = null;
-      activeSubMenu.value = null;
-    } else {
-      // 篮子是空的，说明全站都没有这个词
-      alert('未找到相关内容，请尝试换一个关键词');
-    }
-
   } else {
-    // 如果选的是百度、谷歌这些站外引擎，直接跳过去搜索
+    // 站外引擎直接跳转
     const url = selectedEngine.value.url(searchQuery.value);
     window.open(url, '_blank');
   }
